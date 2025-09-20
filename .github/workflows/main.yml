@@ -22,7 +22,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.ref || '' }}
           fetch-depth: 0
 
-      - name: Determine commit range
+      - name: Determine commit rang
         run: |
           if [[ "${REPO_USE_CIRRUS_RUNNERS}" == "${{ github.repository }}" ]]; then
             echo "use-cirrus-runners=true" >> "$GITHUB_OUTPUT"
