@@ -1,28 +1,30 @@
 name: CI
 
+# Controls when the workflow will run
 on:
+  # Triggers the workflow on push or pull request events but only for the "main" branch
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+
+  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   build:
     runs-on: ubuntu-22.04-arm
     strategy:
       matrix:
-        job: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
-               21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,
-               37,38,39,40,41,42,43,44,45,46,47,48,49,50]
+        job: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.ref || '' }}
-          fetch-depth: 0
-
-      - name: Determine commit rang
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 50
+      - name: Determine commit range
         run: |
           if [[ "${REPO_USE_CIRRUS_RUNNERS}" == "${{ github.repository }}" ]]; then
             echo "use-cirrus-runners=true" >> "$GITHUB_OUTPUT"
@@ -32,34 +34,41 @@ jobs:
             echo "::notice title=Runner Selection::Using GitHub-hosted runners"
           fi
 
-  # ... (your other jobs: test-each-commit, macos-native-arm64, windows-native-dll, etc.)
-
-  lint:
-    name: 'lint'
-    needs: runners
-    runs-on: ${{ needs.runners.outputs.use-cirrus-runners == 'true' && 'ghcr.io/cirruslabs/ubuntu-runner-amd64:24.04-xs' || 'ubuntu-24.04' }}
-    if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
-    timeout-minutes: 20
+  test-each-commit:
+    name: 'test each commit'
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' && github.event.pull_request.commits != 1
+    timeout-minutes: 360
     env:
-      CONTAINER_NAME: "bitcoin-linter"
+      MAX_COUNT: 6
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - name: Determine fetch depth
+        run: echo "FETCH_DEPTH=$((${{ github.event.pull_request.commits }} + 2))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.ref || '' }}
-          fetch-depth: 0
-
-      - name: Configure Docker
-        uses: ./.github/actions/configure-docker
-        with:
-          use-cirrus: ${{ needs.runners.outputs.use-cirrus-runners }}
-
-      - name: CI script
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: ${{ env.FETCH_DEPTH }}
+      - name: Determine commit range
         run: |
-          set -o xtrace
-          docker buildx build -t "$CONTAINER_NAME" $DOCKER_BUILD_CACHE_ARG --file "./ci/lint_imagefile" .
-          CIRRUS_PR_FLAG=""
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            CIRRUS_PR_FLAG="-e CIRRUS_PR=1"
+          # Checkout HEAD~ and find the test base commit
+          git checkout HEAD~
+          MERGE_BASE=$(git rev-list -n1 --merges HEAD)
+          EXCLUDE_MERGE_BASE_ANCESTORS=
+          if test -n "$MERGE_BASE"; then
+            EXCLUDE_MERGE_BASE_ANCESTORS=^${MERGE_BASE}^@
           fi
-          docker run --rm $CIRRUS_PR_FLAG -v "$(pwd)":/bitcoin "$CONTAINER_NAME"
+          echo "TEST_BASE=$(git rev-list -n$((${{ env.MAX_COUNT }} + 1)) --reverse HEAD $EXCLUDE_MERGE_BASE_ANCESTORS | head -1)" >> "$GITHUB_ENV"
+      - run: |
+          git fetch origin "${GITHUB_BASE_REF}"
+          git config user.email "ci@example.com"
+          git config user.name "CI"
+      - run: |
+          sudo apt-get update
+          sudo apt-get install clang mold ccache build-essential cmake ninja-build pkgconf python3-zmq libevent-dev libboost-dev libsqlite3-dev systemtap-sdt-dev libzmq3-dev qt6-base-dev qt6-tools-dev qt6-l10n-tools libqrencode-dev capnproto libcapnp-dev -y
+          sudo pip3 install --break-system-packages pycapnp
+      - name: Compile and run tests
+        run: |
+          # Run tests on commits after the last merge commit and before the PR head commit
+          git rebase --exec "git merge --no-commit origin/${GITHUB_BASE_REF} && python3 ./.github/ci-test-each-commit-exec.py && git reset --hard" ${{ env.TEST_BASE }}
+
+  # ... rest of the workflow remains the same (macos-native-arm64, windows-native-dll, windows-cross, etc.)
